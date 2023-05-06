@@ -205,7 +205,8 @@ def train_drl_agent(ARGS):
         os.makedirs(ARGS.dir_model)
         print(f"created directory: {ARGS.dir_model}")
 
-    csv_writer = CSVWriter("train_logs.csv", ["episode", "loss", "reward"])
+    file_csv = os.path.join(ARGS.dir_model, "train_logs.csv")
+    csv_writer = CSVWriter(file_csv, ["episode", "loss", "reward"])
 
     sum_of_rewards = 0.0
     count_steps = 0
