@@ -253,7 +253,7 @@ def train_drl_agent(ARGS):
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
 
-    dir_model = ARGS.dir_model + "_" + ARGS.loss_function + ARGS.which_optimizer
+    dir_model = ARGS.dir_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer
 
     drl_agent = RLAgent(
         env,
