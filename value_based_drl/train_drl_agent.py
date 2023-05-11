@@ -253,7 +253,7 @@ def train_drl_agent(ARGS):
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
 
-    dir_model = ARGS.dir_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer
+    dir_model = os.path.join(ARGS.dir_model, ARGS.which_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer)
 
     drl_agent = RLAgent(
         env,
@@ -390,7 +390,7 @@ def main():
     loss_function = "huber"
     which_model = "dqn_simple_new"
     which_optimizer = "rms_prop"
-    dir_model = "dqn_simple_new"
+    dir_model = "rl_models"
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
