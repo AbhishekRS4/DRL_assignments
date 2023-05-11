@@ -1,25 +1,26 @@
 import os
 import time
+import math
 import torch
 import argparse
 import numpy as np
 import torch.nn as nn
 
 from copy import deepcopy
-from random import randint, sample
 from torch.autograd import Variable
 from torch.optim import RMSprop, Adam
 from collections import deque, namedtuple
+from random import randint, sample, random
 from pyats.datastructures import NestedAttrDict
 
+from dqn import *
 from catch import CatchEnv
-from dqn import DQNSimple, DQNResidual
 from logger_utils import CSVWriter, write_dict_to_json
 
 
 class RLAgent(object):
-    def __init__(self, gamma,
-                 num_actions,
+    def __init__(self, env,
+                 gamma,
                  learning_rate,
                  exp_buffer_size,
                  batch_size=32,
@@ -27,26 +28,36 @@ class RLAgent(object):
                  which_model="dqn_simple",
                  which_optimizer="rms_prop",
         ):
+        self.step = 0
+        self.env = env
         self.model = None
         self.gamma = gamma
         self.criterion = None
         self.optimizer = None
         self.target_model = None
         self.is_apply_clip = True
-        self.min_experiences = 100
         self.batch_size = batch_size
         self.num_frames_in_state = 4
         self.output_shape = (84, 84)
-        self.num_actions = num_actions
+        self.num_actions = self.env.get_num_actions()
         self.learning_rate = learning_rate
         self.exp_replay_buffer = deque(maxlen=exp_buffer_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+        self.epsilon = 1.0
+        self.epsilon_start = 1.0
+        self.epsilon_end = 0.01
+        self.epsilon_decay = 1000000
 
         self.Transition = namedtuple("Transition", ("state", "action", "reward", "next_state"))
 
         if which_model.lower() == "dqn_simple":
             self.model = DQNSimple(self.num_actions)
             self.target_model = DQNSimple(self.num_actions)
+        elif which_model.lower() == "dqn_simple_new":
+            self.model = DQNSimpleNew(self.num_actions)
+            self.target_model = DQNSimpleNew(self.num_actions)
         elif which_model.lower() == "dqn_residual":
             self.model = DQNResidual(self.num_actions)
             self.target_model = DQNResidual(self.num_actions)
@@ -74,7 +85,7 @@ class RLAgent(object):
 
     def is_exp_replay_available(self,):
         flag = None
-        if len(self.exp_replay_buffer) >= self.min_experiences:
+        if len(self.exp_replay_buffer) >= self.batch_size:
             flag = True
         else:
             flag = False
@@ -99,6 +110,32 @@ class RLAgent(object):
         experiences = sample(self.exp_replay_buffer, self.batch_size)
         experiences = self.Transition(*(zip(*experiences)))
         return experiences
+
+    def get_action(self, state):
+        sample_action = None
+        self.epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
+                                     math.exp(-1. * self.step / self.epsilon_decay)
+
+        if random() <= self.epsilon:
+            sample_action = randint(0, self.num_actions - 1)
+        else:
+            state = np.expand_dims(state, 0)
+            state_var = Variable(torch.FloatTensor(state).cuda())
+            state_var = state_var.reshape(
+                [
+                    -1,
+                    self.num_frames_in_state,
+                    self.output_shape[0],
+                    self.output_shape[1],
+                ]
+            )
+            #print(state_var.shape)
+            state_var.volatile = True
+            q_values = self.model(state_var)
+            q_values = q_values.data.cpu().numpy()
+            sample_action = np.argmax(q_values, 1)[0]
+            #print(f"sample action : {sample_action}")
+        return sample_action
 
     def update_target_model(self,):
         self.target_model = deepcopy(self.model)
@@ -165,7 +202,7 @@ class RLAgent(object):
         target_pred = self.target_model(batch_non_final_next_state)
         #print(batch_reward.shape, target_pred.shape)
         #print(target_values.shape, non_final_mask.shape, q_values.shape)
-        target_values[non_final_mask] = batch_reward[non_final_mask] + target_pred.max(1)[0] * self.gamma
+        target_values[non_final_mask] = batch_reward[non_final_mask] + (torch.max(target_pred, 1)[0] * self.gamma)
         target_values[final_mask] = batch_reward[final_mask].detach()
 
         loss = self.compute_loss(q_values, target_values)
@@ -183,6 +220,32 @@ class RLAgent(object):
 
         return loss.data.cpu().numpy(), reward_score, q_mean, target_mean
 
+    def test(self):
+        self.env.reset()
+        current_state, reward, terminal = self.env.step(1)
+
+        reward = 0
+
+        while not terminal:
+            state = np.expand_dims(current_state, 0)
+            state_var = Variable(torch.FloatTensor(state).cuda())
+            #print(state_var.shape)
+            state_var = state_var.reshape(
+                [
+                    1,
+                    self.num_frames_in_state,
+                    self.output_shape[0],
+                    self.output_shape[1],
+                ]
+            )
+
+            q_pred = self.model(state_var)
+            action = np.argmax(q_pred.data.cpu().numpy(), 1)
+            next_state, reward, terminal = self.env.step(action[0])
+            current_state = next_state
+
+        return reward
+
 
 def train_drl_agent(ARGS):
     env = CatchEnv()
@@ -191,8 +254,8 @@ def train_drl_agent(ARGS):
     num_episodes = ARGS.num_episodes
 
     drl_agent = RLAgent(
+        env,
         ARGS.gamma,
-        num_actions,
         ARGS.learning_rate,
         ARGS.exp_buffer_size,
         ARGS.batch_size,
@@ -201,67 +264,113 @@ def train_drl_agent(ARGS):
         which_optimizer=ARGS.which_optimizer,
     )
 
-    if not os.path.isdir(ARGS.dir_model):
-        os.makedirs(ARGS.dir_model)
-        print(f"created directory: {ARGS.dir_model}")
+    if not os.path.isdir(ARGS.dir_model+"_"+ARGS.loss_function):
+        os.makedirs(ARGS.dir_model+"_"+ARGS.loss_function)
+        print(f"created directory: {ARGS.dir_model+'_'+ARGS.loss_function}")
 
-    file_csv = os.path.join(ARGS.dir_model, "train_logs.csv")
-    csv_writer = CSVWriter(file_csv, ["episode", "loss", "reward"])
+    file_csv = os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, "train_logs.csv")
+    csv_writer = CSVWriter(file_csv, ["episode", "mode", "test_success_rate"])
+    is_train = True
 
-    sum_of_rewards = 0.0
-    count_steps = 0
+    interval_test_success_rates = []
+    count_test_wins = 0
+    count_test_episodes = 0
+    test_success_rate = 0.0
+
     for episode in range(1, num_episodes + 1):
         t_1 = time.time()
-        # reset the environment
-        env.reset()
 
-        arr_losses = np.array([])
+        if is_train:
+            #-----------------------------#
+            #        Train and Test       #
+            #-----------------------------#
 
-        # get the current state
-        current_state, reward, terminal = env.step(1)
+            #--------------------#
+            #        Train       #
+            #--------------------#
+            # reset the environment
+            env.reset()
 
-        while not terminal:
-            random_action = randint(0, 2)
-            next_state, reward, terminal = env.step(random_action)
-            count_steps += 1
+            # (1) state is initialized in current_state
+            current_state, reward, terminal = env.step(1)
+            step_reward = 0
 
-            dict_experience = {}
-            dict_experience["state"] = current_state
-            dict_experience["action"] = random_action
-            dict_experience["reward"] = reward
+            while not terminal:
+                drl_agent.step += 1
+                # (2) for S_t take an action a_t with greedy policy
+                action = drl_agent.get_action(current_state)
+                #print(f"action: {action}")
 
-            if not terminal:
-                dict_experience["next_state"] = next_state
-            else:
-                dict_experience["next_state"] = None
+                next_state, reward, terminal = env.step(action)
 
-            drl_agent.store_experience(dict_experience)
+                # (3) store the states in the experience replay buffer
+                dict_experience = {}
+                dict_experience["state"] = current_state
+                dict_experience["action"] = action
+                dict_experience["reward"] = reward
 
-            if drl_agent.is_exp_replay_available():
-                loss, sum_of_rewards, _, _ = drl_agent.optimize()
-                arr_losses = np.append(arr_losses, loss)
+                if not terminal:
+                    dict_experience["next_state"] = next_state
+                else:
+                    dict_experience["next_state"] = None
 
-            reward = np.clip(reward, -1., 1.)
+                drl_agent.store_experience(dict_experience)
 
-            if (count_steps % ARGS.target_update_interval) == 0:
-                drl_agent.update_target_model()
+                # (4) train the model with the data in the experience replay buffer
+                if drl_agent.is_exp_replay_available():
+                    loss, step_reward, _, _ = drl_agent.optimize()
 
-            print(f"episode: {episode}, reward obtained by the agent: {reward}")
+                # (5) update the target model which is used to compute TD error
+                if (drl_agent.step % ARGS.target_update_interval) == 0:
+                    drl_agent.update_target_model()
 
-        if (episode % 100) == 0:
-            drl_agent.save_model(os.path.join(ARGS.dir_model, f"checkpoint_{episode}.pth"))
-
-        if len(arr_losses) > 0:
-            mean_loss = np.mean(arr_losses)
+            #---------------------#
+            #         Test        #
+            #---------------------#
+            count_test_episodes += 1
+            test_reward = drl_agent.test()
+            if test_reward >= 1:
+                count_test_wins += 1
+            print(f"episode: {episode}, train, reward obtained by the agent: {step_reward}")
         else:
-            mean_loss = 0.0
+            #---------------------#
+            #         Test        #
+            #---------------------#
+            count_test_episodes += 1
+            test_reward = drl_agent.test()
+            if test_reward >= 1:
+                count_test_wins += 1
+            print(f"episode: {episode}, test, reward obtained by the agent: {test_reward}")
 
         t_2 = time.time()
-        print("="*20)
-        print(f"end of episode: {episode}, time: {t_2 - t_1} sec., mean loss: {mean_loss:.4f}, sum of rewards: {sum_of_rewards:.4f}")
-        print("="*20)
-        csv_writer.write_row([episode, mean_loss, sum_of_rewards])
 
+        if (episode % ARGS.test_interval) == 0:
+            is_train = not(is_train)
+
+        if (episode % ARGS.model_save_interval) == 0:
+            drl_agent.save_model(os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, f"checkpoint_{episode}.pth"))
+
+        if count_test_episodes == ARGS.test_interval:
+            test_success_rate = count_test_wins / ARGS.test_interval
+            interval_test_success_rates.append(test_success_rate)
+
+        print("="*50)
+        print(f"end of episode: {episode}, time: {(t_2 - t_1):.4f} sec., test success rate: {test_success_rate:.4f}")
+        print("="*50)
+
+        if count_test_episodes == ARGS.test_interval:
+            count_test_wins = 0
+            count_test_episodes = 0
+            test_success_rate = 0.0
+
+        if is_train:
+            mode = "train"
+        else:
+            mode = "test"
+        csv_writer.write_row([episode, mode, test_success_rate])
+
+    interval_test_success_rates = np.array(interval_test_success_rates)
+    np.save(os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, "test_success_rates.npy"), interval_test_success_rates)
     csv_writer.close()
     return
 
@@ -269,15 +378,17 @@ def train_drl_agent(ARGS):
 def main():
     gamma = 0.99
     batch_size = 32
-    num_episodes = 5000
-    learning_rate = 5e-4
+    num_episodes = 2000
+    learning_rate = 1e-3
     exp_buffer_size = 50000
-    target_update_interval = 2000
+    target_update_interval = 10
+    test_interval = 10
+    model_save_interval = 50
 
     loss_function = "huber"
-    which_model = "dqn_simple"
+    which_model = "dqn_simple_new"
     which_optimizer = "rms_prop"
-    dir_model = "dqn_simple"
+    dir_model = "dqn_simple_new"
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -295,6 +406,10 @@ def main():
         type=int, help="experience replay buffer size")
     parser.add_argument("--target_update_interval", default=target_update_interval,
         type=int, help="target model update interval")
+    parser.add_argument("--test_interval", default=test_interval,
+        type=int, help="model test interval")
+    parser.add_argument("--model_save_interval", default=model_save_interval,
+        type=int, help="model save interval")
 
     parser.add_argument("--dir_model", default=dir_model,
         type=str, help="directory where checkpoint needs to be saved")
