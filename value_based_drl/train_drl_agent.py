@@ -253,6 +253,8 @@ def train_drl_agent(ARGS):
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
 
+    dir_model = ARGS.dir_model + "_" + ARGS.loss_function + ARGS.which_optimizer
+
     drl_agent = RLAgent(
         env,
         ARGS.gamma,
@@ -264,11 +266,11 @@ def train_drl_agent(ARGS):
         which_optimizer=ARGS.which_optimizer,
     )
 
-    if not os.path.isdir(ARGS.dir_model+"_"+ARGS.loss_function):
-        os.makedirs(ARGS.dir_model+"_"+ARGS.loss_function)
-        print(f"created directory: {ARGS.dir_model+'_'+ARGS.loss_function}")
+    if not os.path.isdir(dir_model):
+        os.makedirs(dir_model)
+        print(f"created directory: {dir_model}")
 
-    file_csv = os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, "train_logs.csv")
+    file_csv = os.path.join(dir_model, "train_logs.csv")
     csv_writer = CSVWriter(file_csv, ["episode", "mode", "test_success_rate"])
     is_train = True
 
@@ -348,7 +350,7 @@ def train_drl_agent(ARGS):
             is_train = not(is_train)
 
         if (episode % ARGS.model_save_interval) == 0:
-            drl_agent.save_model(os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, f"checkpoint_{episode}.pth"))
+            drl_agent.save_model(os.path.join(dir_model, f"checkpoint_{episode}.pth"))
 
         if count_test_episodes == ARGS.test_interval:
             test_success_rate = count_test_wins / ARGS.test_interval
@@ -370,7 +372,7 @@ def train_drl_agent(ARGS):
         csv_writer.write_row([episode, mode, test_success_rate])
 
     interval_test_success_rates = np.array(interval_test_success_rates)
-    np.save(os.path.join(ARGS.dir_model+"_"+ARGS.loss_function, "test_success_rates.npy"), interval_test_success_rates)
+    np.save(os.path.join(dir_model, "test_success_rates.npy"), interval_test_success_rates)
     csv_writer.close()
     return
 
