@@ -68,7 +68,7 @@ class RLAgent(object):
         self.target_model.to(self.device)
 
         if which_optimizer.lower() == "rms_prop":
-            self.optimizer = RMSprop(self.model.parameters(), lr=self.learning_rate, eps=1e-2)
+            self.optimizer = RMSprop(self.model.parameters(), lr=self.learning_rate, alpha=0.95, eps=1e-2)
         elif which_optimizer.lower() == "adam":
             self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
         else:
