@@ -416,7 +416,7 @@ def main():
     parser.add_argument("--loss_function", default=loss_function,
         type=str, choices=["huber", "mse", "smooth_l1"], help="loss function to be used for training")
     parser.add_argument("--which_model", default=which_model,
-        type=str, choices=["dqn_simple", "dqn_residual"], help="which model to train")
+        type=str, choices=["dqn_simple", "dqn_simple_new", "dqn_residual"], help="which model to train")
     parser.add_argument("--which_optimizer", default=which_optimizer,
         type=str, choices=["rms_prop", "adam"], help="optimizer to be used for learning")
 
