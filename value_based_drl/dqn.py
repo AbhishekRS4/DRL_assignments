@@ -10,11 +10,11 @@ class DQNSimple(nn.Module):
         self.list_feats = [32, 64, 128]
 
         self.conv_feature_extractor = nn.Sequential(
-            nn.Conv2d(4, self.list_feats[0], kernel_size=7, stride=2, padding=1),
+            nn.Conv2d(4, self.list_feats[0], kernel_size=7, stride=2, padding=3),
             nn.ReLU(inplace=True),
-            nn.Conv2d(self.list_feats[0], self.list_feats[1], kernel_size=5, stride=2, padding=2),
+            nn.Conv2d(self.list_feats[0], self.list_feats[1], kernel_size=5, stride=2, padding=3),
             nn.ReLU(inplace=True),
-            nn.Conv2d(self.list_feats[1], self.list_feats[2], kernel_size=3, stride=2, padding=1),
+            nn.Conv2d(self.list_feats[1], self.list_feats[2], kernel_size=3, stride=1, padding=1),
             nn.ReLU(inplace=True),
         )
 
@@ -28,6 +28,33 @@ class DQNSimple(nn.Module):
         dense_features = torch.flatten(dense_features, 1)
 
         q_value = self.linear_layer(dense_features)
+        return q_value
+
+
+class DQNSimpleNew(nn.Module):
+    def __init__(self, num_actions):
+        super(DQNSimpleNew, self).__init__()
+        self.num_actions = num_actions
+        self.list_feats = [32, 64]
+
+        self.conv_feature_extractor = nn.Sequential(
+            nn.Conv2d(4, self.list_feats[0], kernel_size=7, stride=2, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.list_feats[0], self.list_feats[1], kernel_size=5, stride=2, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.list_feats[1], self.list_feats[1], kernel_size=3, stride=2, padding=0),
+            nn.ReLU(inplace=True),
+        )
+
+        self.linear_1 = nn.Linear(4096, 512)
+        self.linear_2 = nn.Linear(512, self.num_actions)
+        self.relu = nn.ReLU(inplace=True)
+
+    def forward(self, state):
+        conv_features = self.conv_feature_extractor(state)
+
+        dense_features_1 = self.relu(self.linear_1(conv_features.view(conv_features.size(0), -1)))
+        q_value = self.linear_2(dense_features_1)
         return q_value
 
 
