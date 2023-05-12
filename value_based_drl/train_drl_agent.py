@@ -254,7 +254,7 @@ def train_drl_agent(ARGS):
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
 
-    dir_model = os.path.join(ARGS.dir_model, ARGS.which_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer)
+    dir_model = os.path.join(ARGS.dir_model, ARGS.which_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer + "_" + ARGS.batch_size)
 
     drl_agent = RLAgent(
         env,
