@@ -318,6 +318,9 @@ def train_drl_agent(ARGS):
 
                 drl_agent.store_experience(dict_experience)
 
+                # set next state to current state
+                current_state = next_state
+
                 # (4) train the model with the data in the experience replay buffer
                 if drl_agent.is_exp_replay_available():
                     loss, step_reward, _, _ = drl_agent.optimize()
