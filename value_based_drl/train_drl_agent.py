@@ -197,6 +197,9 @@ class RLAgent(object):
         q_pred = self.model(batch_state)
         #print(q_pred.shape, batch_action.shape)
         q_values = q_pred.gather(1, batch_action)
+        #print(q_pred)
+        #print(batch_action)
+        #print(q_values)
 
         # predict with the target model
         target_values = Variable(torch.zeros(self.batch_size).cuda())
@@ -206,6 +209,7 @@ class RLAgent(object):
         target_values[non_final_mask] = batch_reward[non_final_mask] + (torch.max(target_pred, 1)[0] * self.gamma)
         target_values[final_mask] = batch_reward[final_mask].detach()
 
+        #print(target_values)
         loss = self.compute_loss(q_values, target_values)
         self.optimizer.zero_grad()
         loss.backward()
@@ -254,7 +258,7 @@ def train_drl_agent(ARGS):
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
 
-    dir_model = os.path.join(ARGS.dir_model, ARGS.which_model + "_" + ARGS.loss_function + "_" + ARGS.which_optimizer + "_" + ARGS.batch_size)
+    dir_model = os.path.join(ARGS.dir_model, f"{ARGS.which_model}_{ARGS.loss_function}_{ARGS.which_optimizer}_{ARGS.batch_size}")
 
     drl_agent = RLAgent(
         env,
