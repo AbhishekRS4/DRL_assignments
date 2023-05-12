@@ -39,8 +39,9 @@ class RLAgent(object):
         self.batch_size = batch_size
         self.num_frames_in_state = 4
         self.output_shape = (84, 84)
-        self.num_actions = self.env.get_num_actions()
+        self.loss_function = loss_function
         self.learning_rate = learning_rate
+        self.num_actions = self.env.get_num_actions()
         self.exp_replay_buffer = deque(maxlen=exp_buffer_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -74,11 +75,11 @@ class RLAgent(object):
         else:
             print(f"unidentified option for (which_optimizer={which_optimizer}), should be one of ['RMSprop', 'Adam']")
 
-        if loss_function.lower() == "mse":
+        if self.loss_function.lower() == "mse":
             self.criterion = nn.MSELoss()
-        elif loss_function.lower() == "smooth_l1":
+        elif self.loss_function.lower() == "smooth_l1":
             self.criterion = nn.SmoothL1Loss()
-        elif loss_function.lower() == "huber":
+        elif self.loss_function.lower() == "huber":
             self.criterion = nn.HuberLoss()
         else:
             print(f"unidentified option for (loss_function={loss_function}), should be one of ['mse', 'smooth_l1', 'huber']")
@@ -113,8 +114,8 @@ class RLAgent(object):
 
     def get_action(self, state):
         sample_action = None
-        self.epsilon = self.epsilon_end + (self.epsilon_start - self.epsilon_end) * \
-                                     math.exp(-1. * self.step / self.epsilon_decay)
+        if self.epsilon > self.epsilon_end:
+            self.epsilon -= ((self.epsilon_start - self.epsilon_end) / self.epsilon_decay)
 
         if random() <= self.epsilon:
             sample_action = randint(0, self.num_actions - 1)
@@ -384,8 +385,8 @@ def main():
     gamma = 0.99
     batch_size = 32
     num_episodes = 2000
-    learning_rate = 1e-3
-    exp_buffer_size = 50000
+    learning_rate = 1e-4
+    exp_buffer_size = 500000
     target_update_interval = 10
     test_interval = 10
     model_save_interval = 50
