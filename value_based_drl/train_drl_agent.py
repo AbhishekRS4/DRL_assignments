@@ -18,7 +18,42 @@ from catch import CatchEnv
 from logger_utils import CSVWriter, write_dict_to_json
 
 
-class RLAgent(object):
+class ExperienceReplayBuffer(object):
+    def __init__(self, exp_buffer_size):
+        self.replay_buffer = deque(maxlen=exp_buffer_size)
+        self.TransitionTable = namedtuple("Transition", ("state", "action", "reward", "next_state", "terminal"))
+
+    def store_experience(self, dict_experience):
+        dict_experience = NestedAttrDict(**dict_experience)
+        next_state = None
+        if dict_experience.next_state is not None:
+            next_state = torch.FloatTensor(dict_experience.next_state)
+
+        transition_table = self.TransitionTable(
+            state=torch.FloatTensor(dict_experience.state),
+            action=torch.LongTensor([[dict_experience.action]]),
+            reward=torch.FloatTensor([dict_experience.reward]),
+            next_state=next_state,
+            terminal=dict_experience.terminal,
+        )
+        self.replay_buffer.append(transition_table)
+        return
+
+    def sample_experiences(self, batch_size):
+        experiences = sample(self.replay_buffer, batch_size)
+        experiences = self.TransitionTable(*(zip(*experiences)))
+        return experiences
+
+    def is_exp_replay_available(self, batch_size):
+        is_exp_available = None
+        if len(self.replay_buffer) >= batch_size:
+            is_exp_available = True
+        else:
+            is_exp_available = False
+        return is_exp_available
+
+
+class DRLAgentDQN(object):
     def __init__(self, env,
                  gamma,
                  learning_rate,
@@ -30,11 +65,11 @@ class RLAgent(object):
         ):
         self.step = 0
         self.env = env
-        self.model = None
+        self.dqn_eval = None
         self.gamma = gamma
         self.criterion = None
         self.optimizer = None
-        self.target_model = None
+        self.dqn_target = None
         self.is_apply_clip = True
         self.batch_size = batch_size
         self.num_frames_in_state = 4
@@ -42,36 +77,33 @@ class RLAgent(object):
         self.loss_function = loss_function
         self.learning_rate = learning_rate
         self.num_actions = self.env.get_num_actions()
-        self.exp_replay_buffer = deque(maxlen=exp_buffer_size)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
+        self.exp_replay_buffer = ExperienceReplayBuffer(exp_buffer_size)
 
         self.epsilon = 1.0
         self.epsilon_start = 1.0
         self.epsilon_end = 0.01
         self.epsilon_decay = 1000000
 
-        self.Transition = namedtuple("Transition", ("state", "action", "reward", "next_state"))
-
         if which_model.lower() == "dqn_simple":
-            self.model = DQNSimple(self.num_actions)
-            self.target_model = DQNSimple(self.num_actions)
+            self.dqn_eval = DQNSimple(self.num_actions)
+            self.dqn_target = DQNSimple(self.num_actions)
         elif which_model.lower() == "dqn_simple_new":
-            self.model = DQNSimpleNew(self.num_actions)
-            self.target_model = DQNSimpleNew(self.num_actions)
+            self.dqn_eval = DQNSimpleNew(self.num_actions)
+            self.dqn_target = DQNSimpleNew(self.num_actions)
         elif which_model.lower() == "dqn_residual":
-            self.model = DQNResidual(self.num_actions)
-            self.target_model = DQNResidual(self.num_actions)
+            self.dqn_eval = DQNResidual(self.num_actions)
+            self.dqn_target = DQNResidual(self.num_actions)
         else:
             print(f"unidentified option for (which_model={which_model}), should be one of ['dqn_simple', 'dqn_residual']")
 
-        self.model.to(self.device)
-        self.target_model.to(self.device)
+        self.dqn_eval.to(self.device)
+        self.dqn_target.to(self.device)
 
         if which_optimizer.lower() == "rms_prop":
-            self.optimizer = RMSprop(self.model.parameters(), lr=self.learning_rate, alpha=0.95, eps=1e-2)
+            self.optimizer = RMSprop(self.dqn_eval.parameters(), lr=self.learning_rate)
         elif which_optimizer.lower() == "adam":
-            self.optimizer = Adam(self.model.parameters(), lr=self.learning_rate)
+            self.optimizer = Adam(self.dqn_eval.parameters(), lr=self.learning_rate)
         else:
             print(f"unidentified option for (which_optimizer={which_optimizer}), should be one of ['RMSprop', 'Adam']")
 
@@ -84,94 +116,67 @@ class RLAgent(object):
         else:
             print(f"unidentified option for (loss_function={loss_function}), should be one of ['mse', 'smooth_l1', 'huber']")
 
-    def is_exp_replay_available(self,):
-        flag = None
-        if len(self.exp_replay_buffer) >= self.batch_size:
-            flag = True
-        else:
-            flag = False
-        return flag
-
-    def store_experience(self, dict_experience):
-        dict_experience = NestedAttrDict(**dict_experience)
-        next_state = None
-        if dict_experience.next_state is not None:
-            next_state = torch.FloatTensor(dict_experience.next_state)
-
-        transition = self.Transition(
-            state=torch.FloatTensor(dict_experience.state),
-            action=torch.LongTensor([[dict_experience.action]]),
-            reward=torch.FloatTensor([dict_experience.reward]),
-            next_state=next_state,
-        )
-        self.exp_replay_buffer.append(transition)
-        return
-
-    def sample_experiences(self,):
-        experiences = sample(self.exp_replay_buffer, self.batch_size)
-        experiences = self.Transition(*(zip(*experiences)))
-        return experiences
-
     def get_action(self, state):
         sample_action = None
-        if self.epsilon > self.epsilon_end:
-            self.epsilon -= ((self.epsilon_start - self.epsilon_end) / self.epsilon_decay)
 
         if random() <= self.epsilon:
+            # choose a random action from the set of action space
             sample_action = randint(0, self.num_actions - 1)
         else:
             state = np.expand_dims(state, 0)
-            state_var = Variable(torch.FloatTensor(state).cuda())
-            state_var = state_var.reshape(
+            state_tensor = torch.FloatTensor(state)
+            state_tensor = state_tensor.reshape(
                 [
                     -1,
                     self.num_frames_in_state,
                     self.output_shape[0],
                     self.output_shape[1],
                 ]
-            )
-            #print(state_var.shape)
-            state_var.volatile = True
-            q_values = self.model(state_var)
+            ).to(self.device)
+
+            # choose the action for which the predicted q_value is the max
+            q_values = self.dqn_eval.forward(state_tensor)
             q_values = q_values.data.cpu().numpy()
             sample_action = np.argmax(q_values, 1)[0]
-            #print(f"sample action : {sample_action}")
         return sample_action
 
     def update_target_model(self,):
-        self.target_model = deepcopy(self.model)
+        self.dqn_target.load_state_dict(self.dqn_eval.state_dict())
         return
 
     def save_model(self, file_checkpoint):
         dict_checkpoint = {
-            "dqn": self.model.state_dict(),
-            "target": self.target_model.state_dict(),
+            "dqn_eval": self.dqn_eval.state_dict(),
+            "dqn_target": self.dqn_target.state_dict(),
             "optimizer": self.optimizer.state_dict(),
         }
 
         torch.save(dict_checkpoint, file_checkpoint)
         return
 
-    def compute_loss(self, q_values, target_values):
+    def _update_epsilon(self):
+        if self.epsilon > self.epsilon_end:
+            self.epsilon -= ((self.epsilon_start - self.epsilon_end) / self.epsilon_decay)
+        return
+
+    def _compute_loss(self, q_values, target_values):
         loss = self.criterion(q_values, target_values)
         return loss
 
-    def optimize(self):
+    def learn(self):
+        # update epsilon
+        self._update_epsilon()
+
         # sample experiences from the experience replay buffer
-        state_transitions = self.sample_experiences()
+        state_transitions = self.exp_replay_buffer.sample_experiences(self.batch_size)
 
-        # create mask tensors
-        non_final_mask = torch.ByteTensor(list(map(lambda ns: ns is not None, state_transitions.next_state))).cuda()
-        final_mask = 1 - non_final_mask
+        batch_state = torch.cat(state_transitions.state).to(self.device)
+        batch_action = torch.cat(state_transitions.action).to(self.device)
+        batch_reward = torch.cat(state_transitions.reward).to(self.device)
+        batch_next_state = torch.cat(state_transitions.next_state).to(self.device)
+        batch_terminal = state_transitions.terminal
 
-        batch_state = Variable(torch.cat(state_transitions.state).cuda())
-        batch_action = Variable(torch.cat(state_transitions.action).cuda())
-        batch_reward = Variable(torch.cat(state_transitions.reward).cuda())
-        #batch_reward = torch.unsqueeze(batch_reward, 1)
-        batch_non_final_next_state = Variable(torch.cat([ns for ns in state_transitions.next_state if ns is not None]).cuda())
-        batch_non_final_next_state.volatile = True
-
-        # reshape state and next_state
+        # reshape state and next_state tensors
         batch_state = batch_state.view(
             [
                 self.batch_size,
@@ -180,62 +185,54 @@ class RLAgent(object):
                 self.output_shape[1],
             ]
         )
-        batch_non_final_next_state = batch_non_final_next_state.view(
+        batch_next_state = batch_next_state.view(
             [
-                -1,
+                self.batch_size,
                 self.num_frames_in_state,
                 self.output_shape[0],
                 self.output_shape[1],
             ]
         )
-        batch_non_final_next_state.volatile = True
 
         # apply reward clipping between -1 and 1
         batch_reward.data.clamp_(-1, 1)
 
-        # predict q_value with the DQN Model
-        q_pred = self.model(batch_state)
+        # apply zero grad for the optimizer
+        self.optimizer.zero_grad()
+
+        # predict q_value for state with the DQN eval model
+        q_current = self.dqn_eval.forward(batch_state)
         #print(q_pred.shape, batch_action.shape)
-        q_values = q_pred.gather(1, batch_action)
+        q_pred_current = q_current.gather(1, batch_action)
         #print(q_pred)
         #print(batch_action)
         #print(q_values)
 
-        # predict with the target model
-        target_values = Variable(torch.zeros(self.batch_size).cuda())
-        target_pred = self.target_model(batch_non_final_next_state)
+        # predict q_value for next_state with the DQN target model
+        q_next = self.dqn_target.forward(batch_next_state)
+        q_pred_next = torch.max(q_next, 1)[0]
+        q_pred_next[batch_terminal] = 0.0
         #print(batch_reward.shape, target_pred.shape)
         #print(target_values.shape, non_final_mask.shape, q_values.shape)
-        target_values[non_final_mask] = batch_reward[non_final_mask] + (torch.max(target_pred, 1)[0] * self.gamma)
-        target_values[final_mask] = batch_reward[final_mask].detach()
+        q_target = batch_reward + (self.gamma * q_pred_next)
 
         #print(target_values)
-        loss = self.compute_loss(q_values, target_values)
-        self.optimizer.zero_grad()
+        loss = self._compute_loss(q_pred_current, q_target)
         loss.backward()
-
-        if self.is_apply_clip:
-            for param in self.model.parameters():
-                param.grad.data.clamp_(-1, 1)
         self.optimizer.step()
 
-        reward_score = int(torch.sum(batch_reward).data.cpu().numpy())
-        q_mean = torch.sum(q_pred, 0).data.cpu().numpy()[0]
-        target_mean = torch.sum(target_pred, 0).data.cpu().numpy()[0]
-
-        return loss.data.cpu().numpy(), reward_score, q_mean, target_mean
+        return loss.data.cpu().numpy()
 
     def test(self):
-        self.env.reset()
-        current_state, reward, terminal = self.env.step(1)
-
-        reward = 0
+        test_reward = 0
+        terminal = False
+        current_state = self.env.reset()
 
         while not terminal:
             state = np.expand_dims(current_state, 0)
-            state_var = Variable(torch.FloatTensor(state).cuda())
-            #print(state_var.shape)
-            state_var = state_var.reshape(
+            state_tensor = torch.FloatTensor(state).to(self.device)
+            #print(state_tensor.shape)
+            state_tensor = state_tensor.reshape(
                 [
                     1,
                     self.num_frames_in_state,
@@ -244,15 +241,15 @@ class RLAgent(object):
                 ]
             )
 
-            q_pred = self.model(state_var)
+            q_pred = self.dqn_eval.forward(state_tensor)
             action = np.argmax(q_pred.data.cpu().numpy(), 1)
-            next_state, reward, terminal = self.env.step(action[0])
+            next_state, test_reward, terminal = self.env.step(action[0])
             current_state = next_state
 
-        return reward
+        return test_reward
 
 
-def train_drl_agent(ARGS):
+def train_drl_agent_dqn(ARGS):
     env = CatchEnv()
 
     num_actions = env.get_num_actions()
@@ -260,7 +257,7 @@ def train_drl_agent(ARGS):
 
     dir_model = os.path.join(ARGS.dir_model, f"{ARGS.which_model}_{ARGS.loss_function}_{ARGS.which_optimizer}_{ARGS.batch_size}")
 
-    drl_agent = RLAgent(
+    drl_agent_dqn = DRLAgentDQN(
         env,
         ARGS.gamma,
         ARGS.learning_rate,
@@ -285,8 +282,9 @@ def train_drl_agent(ARGS):
     test_success_rate = 0.0
 
     for episode in range(1, num_episodes + 1):
+        terminal = False
+        current_state = env.reset()
         t_1 = time.time()
-
         if is_train:
             #-----------------------------#
             #        Train and Test       #
@@ -296,16 +294,13 @@ def train_drl_agent(ARGS):
             #        Train       #
             #--------------------#
             # reset the environment
-            env.reset()
-
             # (1) state is initialized in current_state
-            current_state, reward, terminal = env.step(1)
             step_reward = 0
 
             while not terminal:
-                drl_agent.step += 1
+                drl_agent_dqn.step += 1
                 # (2) for S_t take an action a_t with greedy policy
-                action = drl_agent.get_action(current_state)
+                action = drl_agent_dqn.get_action(current_state)
                 #print(f"action: {action}")
 
                 next_state, reward, terminal = env.step(action)
@@ -314,40 +309,37 @@ def train_drl_agent(ARGS):
                 dict_experience = {}
                 dict_experience["state"] = current_state
                 dict_experience["action"] = action
+                dict_experience["next_state"] = next_state
                 dict_experience["reward"] = reward
+                dict_experience["terminal"] = terminal
 
-                if not terminal:
-                    dict_experience["next_state"] = next_state
-                else:
-                    dict_experience["next_state"] = None
-
-                drl_agent.store_experience(dict_experience)
+                drl_agent_dqn.exp_replay_buffer.store_experience(dict_experience)
 
                 # set next state to current state
                 current_state = next_state
 
                 # (4) train the model with the data in the experience replay buffer
-                if drl_agent.is_exp_replay_available():
-                    loss, step_reward, _, _ = drl_agent.optimize()
+                if drl_agent_dqn.exp_replay_buffer.is_exp_replay_available(ARGS.batch_size):
+                    loss = drl_agent_dqn.learn()
 
                 # (5) update the target model which is used to compute TD error
-                if (drl_agent.step % ARGS.target_update_interval) == 0:
-                    drl_agent.update_target_model()
+                if (drl_agent_dqn.step % ARGS.target_update_interval) == 0:
+                    drl_agent_dqn.update_target_model()
 
             #---------------------#
             #         Test        #
             #---------------------#
             count_test_episodes += 1
-            test_reward = drl_agent.test()
+            test_reward = drl_agent_dqn.test()
             if test_reward >= 1:
                 count_test_wins += 1
-            print(f"episode: {episode}, train, reward obtained by the agent: {step_reward}")
+            print(f"episode: {episode}, train, reward obtained by the agent: {test_reward}")
         else:
             #---------------------#
             #         Test        #
             #---------------------#
             count_test_episodes += 1
-            test_reward = drl_agent.test()
+            test_reward = drl_agent_dqn.test()
             if test_reward >= 1:
                 count_test_wins += 1
             print(f"episode: {episode}, test, reward obtained by the agent: {test_reward}")
@@ -358,7 +350,7 @@ def train_drl_agent(ARGS):
             is_train = not(is_train)
 
         if (episode % ARGS.model_save_interval) == 0:
-            drl_agent.save_model(os.path.join(dir_model, f"checkpoint_{episode}.pth"))
+            drl_agent_dqn.save_model(os.path.join(dir_model, f"checkpoint_{episode}.pth"))
 
         if count_test_episodes == ARGS.test_interval:
             test_success_rate = count_test_wins / ARGS.test_interval
@@ -368,16 +360,16 @@ def train_drl_agent(ARGS):
         print(f"end of episode: {episode}, time: {(t_2 - t_1):.4f} sec., test success rate: {test_success_rate:.4f}")
         print("="*50)
 
-        if count_test_episodes == ARGS.test_interval:
-            count_test_wins = 0
-            count_test_episodes = 0
-            test_success_rate = 0.0
-
         if is_train:
             mode = "train"
         else:
             mode = "test"
         csv_writer.write_row([episode, mode, test_success_rate])
+
+        if count_test_episodes == ARGS.test_interval:
+            count_test_wins = 0
+            count_test_episodes = 0
+            test_success_rate = 0.0
 
     interval_test_success_rates = np.array(interval_test_success_rates)
     np.save(os.path.join(dir_model, "test_success_rates.npy"), interval_test_success_rates)
@@ -395,7 +387,7 @@ def main():
     test_interval = 10
     model_save_interval = 50
 
-    loss_function = "huber"
+    loss_function = "mse"
     which_model = "dqn_simple_new"
     which_optimizer = "rms_prop"
     dir_model = "rl_models"
@@ -431,7 +423,7 @@ def main():
         type=str, choices=["rms_prop", "adam"], help="optimizer to be used for learning")
 
     ARGS, unparsed = parser.parse_known_args()
-    train_drl_agent(ARGS)
+    train_drl_agent_dqn(ARGS)
 
     return
 
