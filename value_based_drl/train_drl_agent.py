@@ -25,15 +25,12 @@ class ExperienceReplayBuffer(object):
 
     def store_experience(self, dict_experience):
         dict_experience = NestedAttrDict(**dict_experience)
-        next_state = None
-        if dict_experience.next_state is not None:
-            next_state = torch.FloatTensor(dict_experience.next_state)
 
         transition_table = self.TransitionTable(
             state=torch.FloatTensor(dict_experience.state),
             action=torch.LongTensor([[dict_experience.action]]),
             reward=torch.FloatTensor([dict_experience.reward]),
-            next_state=next_state,
+            next_state=torch.FloatTensor(dict_experience.next_state),
             terminal=dict_experience.terminal,
         )
         self.replay_buffer.append(transition_table)
@@ -65,7 +62,7 @@ class DRLAgentDQN(object):
         ):
         self.step = 0
         self.env = env
-        self.dqn_eval = None
+        self.dqn_local = None
         self.gamma = gamma
         self.criterion = None
         self.optimizer = None
@@ -86,24 +83,26 @@ class DRLAgentDQN(object):
         self.epsilon_decay = 1000000
 
         if which_model.lower() == "dqn_simple":
-            self.dqn_eval = DQNSimple(self.num_actions)
+            self.dqn_local = DQNSimple(self.num_actions)
             self.dqn_target = DQNSimple(self.num_actions)
         elif which_model.lower() == "dqn_simple_new":
-            self.dqn_eval = DQNSimpleNew(self.num_actions)
+            self.dqn_local = DQNSimpleNew(self.num_actions)
             self.dqn_target = DQNSimpleNew(self.num_actions)
         elif which_model.lower() == "dqn_residual":
-            self.dqn_eval = DQNResidual(self.num_actions)
+            self.dqn_local = DQNResidual(self.num_actions)
             self.dqn_target = DQNResidual(self.num_actions)
         else:
             print(f"unidentified option for (which_model={which_model}), should be one of ['dqn_simple', 'dqn_residual']")
 
-        self.dqn_eval.to(self.device)
+        self.dqn_local.to(self.device)
         self.dqn_target.to(self.device)
 
+        self.dqn_target.eval()
+
         if which_optimizer.lower() == "rms_prop":
-            self.optimizer = RMSprop(self.dqn_eval.parameters(), lr=self.learning_rate)
+            self.optimizer = RMSprop(self.dqn_local.parameters(), lr=self.learning_rate)
         elif which_optimizer.lower() == "adam":
-            self.optimizer = Adam(self.dqn_eval.parameters(), lr=self.learning_rate)
+            self.optimizer = Adam(self.dqn_local.parameters(), lr=self.learning_rate)
         else:
             print(f"unidentified option for (which_optimizer={which_optimizer}), should be one of ['RMSprop', 'Adam']")
 
@@ -123,6 +122,7 @@ class DRLAgentDQN(object):
             # choose a random action from the set of action space
             sample_action = randint(0, self.num_actions - 1)
         else:
+            self.dqn_local.eval()
             state = np.expand_dims(state, 0)
             state_tensor = torch.FloatTensor(state)
             state_tensor = state_tensor.reshape(
@@ -134,19 +134,20 @@ class DRLAgentDQN(object):
                 ]
             ).to(self.device)
 
+            q_values = None
             # choose the action for which the predicted q_value is the max
-            q_values = self.dqn_eval.forward(state_tensor)
-            q_values = q_values.data.cpu().numpy()
+            with torch.no_grad():
+                q_values = self.dqn_local(state_tensor).data.cpu().numpy()
             sample_action = np.argmax(q_values, 1)[0]
         return sample_action
 
     def update_target_model(self,):
-        self.dqn_target.load_state_dict(self.dqn_eval.state_dict())
+        self.dqn_target.load_state_dict(self.dqn_local.state_dict())
         return
 
     def save_model(self, file_checkpoint):
         dict_checkpoint = {
-            "dqn_eval": self.dqn_eval.state_dict(),
+            "dqn_local": self.dqn_local.state_dict(),
             "dqn_target": self.dqn_target.state_dict(),
             "optimizer": self.optimizer.state_dict(),
         }
@@ -159,12 +160,13 @@ class DRLAgentDQN(object):
             self.epsilon -= ((self.epsilon_start - self.epsilon_end) / self.epsilon_decay)
         return
 
-    def _compute_loss(self, q_values, target_values):
-        loss = self.criterion(q_values, target_values)
+    def _compute_loss(self, q_values, q_target_values):
+        loss = self.criterion(q_values, q_target_values)
         return loss
 
     def learn(self):
         # update epsilon
+        self.dqn_local.train()
         self._update_epsilon()
 
         # sample experiences from the experience replay buffer
@@ -201,7 +203,7 @@ class DRLAgentDQN(object):
         self.optimizer.zero_grad()
 
         # predict q_value for state with the DQN eval model
-        q_current = self.dqn_eval.forward(batch_state)
+        q_current = self.dqn_local(batch_state)
         #print(q_pred.shape, batch_action.shape)
         q_pred_current = q_current.gather(1, batch_action)
         #print(q_pred)
@@ -209,7 +211,7 @@ class DRLAgentDQN(object):
         #print(q_values)
 
         # predict q_value for next_state with the DQN target model
-        q_next = self.dqn_target.forward(batch_next_state)
+        q_next = self.dqn_target(batch_next_state).detach()
         q_pred_next = torch.max(q_next, 1)[0]
         q_pred_next[batch_terminal] = 0.0
         #print(batch_reward.shape, target_pred.shape)
@@ -226,6 +228,7 @@ class DRLAgentDQN(object):
     def test(self):
         test_reward = 0
         terminal = False
+        self.dqn_local.eval()
         current_state = self.env.reset()
 
         while not terminal:
@@ -241,7 +244,9 @@ class DRLAgentDQN(object):
                 ]
             )
 
-            q_pred = self.dqn_eval.forward(state_tensor)
+            q_pred = None
+            with torch.no_grad():
+                q_pred = self.dqn_local(state_tensor)
             action = np.argmax(q_pred.data.cpu().numpy(), 1)
             next_state, test_reward, terminal = self.env.step(action[0])
             current_state = next_state
@@ -273,103 +278,77 @@ def train_drl_agent_dqn(ARGS):
         print(f"created directory: {dir_model}")
 
     file_csv = os.path.join(dir_model, "train_logs.csv")
-    csv_writer = CSVWriter(file_csv, ["episode", "mode", "test_success_rate"])
-    is_train = True
+    csv_writer = CSVWriter(file_csv, ["episode", "test_success_rate"])
 
     interval_test_success_rates = []
     count_test_wins = 0
-    count_test_episodes = 0
-    test_success_rate = 0.0
+    success_rate = 0.0
 
     for episode in range(1, num_episodes + 1):
         terminal = False
+        # reset the environment
         current_state = env.reset()
         t_1 = time.time()
-        if is_train:
-            #-----------------------------#
-            #        Train and Test       #
-            #-----------------------------#
 
-            #--------------------#
-            #        Train       #
-            #--------------------#
-            # reset the environment
-            # (1) state is initialized in current_state
-            step_reward = 0
+        #--------------------#
+        #        Train       #
+        #--------------------#
+        # (1) state is initialized in current_state
+        while not terminal:
+            drl_agent_dqn.step += 1
+            # (2) for S_t take an action a_t with greedy policy
+            action = drl_agent_dqn.get_action(current_state)
+            #print(f"action: {action}")
 
-            while not terminal:
-                drl_agent_dqn.step += 1
-                # (2) for S_t take an action a_t with greedy policy
-                action = drl_agent_dqn.get_action(current_state)
-                #print(f"action: {action}")
+            next_state, reward, terminal = env.step(action)
 
-                next_state, reward, terminal = env.step(action)
+            # (3) store the states in the experience replay buffer
+            dict_experience = {}
+            dict_experience["state"] = current_state
+            dict_experience["action"] = action
+            dict_experience["next_state"] = next_state
+            dict_experience["reward"] = reward
+            dict_experience["terminal"] = terminal
 
-                # (3) store the states in the experience replay buffer
-                dict_experience = {}
-                dict_experience["state"] = current_state
-                dict_experience["action"] = action
-                dict_experience["next_state"] = next_state
-                dict_experience["reward"] = reward
-                dict_experience["terminal"] = terminal
+            drl_agent_dqn.exp_replay_buffer.store_experience(dict_experience)
 
-                drl_agent_dqn.exp_replay_buffer.store_experience(dict_experience)
+            # (4) train the model with the data in the experience replay buffer
+            if drl_agent_dqn.exp_replay_buffer.is_exp_replay_available(ARGS.batch_size):
+                loss = drl_agent_dqn.learn()
 
-                # set next state to current state
-                current_state = next_state
+            # (5) update the target model which is used to compute TD error
+            if (drl_agent_dqn.step % ARGS.target_update_interval) == 0:
+                drl_agent_dqn.update_target_model()
 
-                # (4) train the model with the data in the experience replay buffer
-                if drl_agent_dqn.exp_replay_buffer.is_exp_replay_available(ARGS.batch_size):
-                    loss = drl_agent_dqn.learn()
+            # set next state to current state
+            current_state = next_state
 
-                # (5) update the target model which is used to compute TD error
-                if (drl_agent_dqn.step % ARGS.target_update_interval) == 0:
-                    drl_agent_dqn.update_target_model()
-
-            #---------------------#
-            #         Test        #
-            #---------------------#
-            count_test_episodes += 1
-            test_reward = drl_agent_dqn.test()
-            if test_reward >= 1:
-                count_test_wins += 1
-            print(f"episode: {episode}, train, reward obtained by the agent: {test_reward}")
-        else:
-            #---------------------#
-            #         Test        #
-            #---------------------#
-            count_test_episodes += 1
-            test_reward = drl_agent_dqn.test()
-            if test_reward >= 1:
-                count_test_wins += 1
-            print(f"episode: {episode}, test, reward obtained by the agent: {test_reward}")
+        #---------------------#
+        #         Test        #
+        #---------------------#
+        test_reward = drl_agent_dqn.test()
+        if test_reward >= 1:
+            count_test_wins += 1
+        print(f"episode: {episode}, test, reward obtained by the agent: {test_reward}")
 
         t_2 = time.time()
-
-        if (episode % ARGS.test_interval) == 0:
-            is_train = not(is_train)
 
         if (episode % ARGS.model_save_interval) == 0:
             drl_agent_dqn.save_model(os.path.join(dir_model, f"checkpoint_{episode}.pth"))
 
-        if count_test_episodes == ARGS.test_interval:
-            test_success_rate = count_test_wins / ARGS.test_interval
-            interval_test_success_rates.append(test_success_rate)
+        if (episode % ARGS.test_interval) == 0:
+            success_rate = count_test_wins / ARGS.test_interval
+            interval_test_success_rates.append(success_rate)
 
         print("="*50)
-        print(f"end of episode: {episode}, time: {(t_2 - t_1):.4f} sec., test success rate: {test_success_rate:.4f}")
+        print(f"end of episode: {episode}, time: {(t_2 - t_1):.4f} sec., test success rate: {success_rate:.4f}")
         print("="*50)
 
-        if is_train:
-            mode = "train"
-        else:
-            mode = "test"
-        csv_writer.write_row([episode, mode, test_success_rate])
+        csv_writer.write_row([episode, success_rate])
 
-        if count_test_episodes == ARGS.test_interval:
+        if (episode % ARGS.test_interval) == 0:
             count_test_wins = 0
-            count_test_episodes = 0
-            test_success_rate = 0.0
+            success_rate = 0.0
 
     interval_test_success_rates = np.array(interval_test_success_rates)
     np.save(os.path.join(dir_model, "test_success_rates.npy"), interval_test_success_rates)
@@ -379,11 +358,11 @@ def train_drl_agent_dqn(ARGS):
 
 def main():
     gamma = 0.99
-    batch_size = 32
-    num_episodes = 2000
+    batch_size = 16
+    num_episodes = 3000
     learning_rate = 1e-4
     exp_buffer_size = 500000
-    target_update_interval = 10
+    target_update_interval = 1000
     test_interval = 10
     model_save_interval = 50
 
@@ -424,7 +403,6 @@ def main():
 
     ARGS, unparsed = parser.parse_known_args()
     train_drl_agent_dqn(ARGS)
-
     return
 
 
