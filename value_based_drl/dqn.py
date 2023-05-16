@@ -7,8 +7,7 @@ class DQNSimpleLowDim(nn.Module):
     def __init__(self, num_actions):
         super().__init__()
         self.num_actions = num_actions
-        #self.list_feats = [32, 64]
-        self.list_feats = [16, 32]
+        self.list_feats = [32, 64]
 
         self.conv_feature_extractor = nn.Sequential(
             nn.Conv2d(4, self.list_feats[0], kernel_size=7, stride=2, padding=0),
@@ -16,7 +15,6 @@ class DQNSimpleLowDim(nn.Module):
             nn.Conv2d(self.list_feats[0], self.list_feats[1], kernel_size=3, stride=1, padding=0),
             nn.ReLU(inplace=True),
         )
-        #self.linear_layer = nn.Linear(25*self.list_feats[1], self.num_actions)
         self.linear_layer = nn.Linear(36*self.list_feats[1], self.num_actions)
 
     def forward(self, state):
