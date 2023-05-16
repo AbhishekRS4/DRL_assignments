@@ -361,10 +361,10 @@ def main():
     batch_size = 16
     num_episodes = 3000
     learning_rate = 1e-4
-    exp_buffer_size = 500000
+    exp_buffer_size = 50000
     target_update_interval = 1000
     test_interval = 10
-    model_save_interval = 50
+    model_save_interval = 1000
 
     loss_function = "mse"
     which_model = "dqn_simple_new"
