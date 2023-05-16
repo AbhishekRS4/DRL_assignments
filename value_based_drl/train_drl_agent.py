@@ -255,7 +255,9 @@ class DRLAgentDQN(object):
 
 def train_drl_agent_dqn(ARGS):
     env = CatchEnv(low_dim=bool(ARGS.low_dim))
+    print(f"DQN model training")
     print(f"low dimensional images: {bool(ARGS.low_dim)}, model: {ARGS.which_model}")
+    print(f"batch size: {ARGS.batch_size}, optimizer: {ARGS.which_optimizer}, loss function: {ARGS.loss_function}")
 
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
