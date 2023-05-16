@@ -26,16 +26,6 @@ class ExperienceReplayBuffer(object):
     def store_experience(self, dict_experience):
         dict_experience = NestedAttrDict(**dict_experience)
 
-        """
-        transition_table = self.TransitionTable(
-            state=torch.FloatTensor(dict_experience.state),
-            action=torch.LongTensor([[dict_experience.action]]),
-            reward=torch.FloatTensor([dict_experience.reward]),
-            next_state=torch.FloatTensor(dict_experience.next_state),
-            terminal=dict_experience.terminal,
-        )
-        """
-
         transition_table = self.TransitionTable(
             state=np.array([dict_experience.state], dtype=np.float32),
             action=np.array([[dict_experience.action]], dtype=np.int32),
@@ -110,8 +100,11 @@ class DRLAgentDQN(object):
         elif which_model.lower() == "dqn_residual":
             self.dqn_local = DQNResidual(self.num_actions)
             self.dqn_target = DQNResidual(self.num_actions)
+        elif which_model.lower() == "dqn_residual_deep":
+            self.dqn_local = DQNResidualDeep(self.num_actions)
+            self.dqn_target = DQNResidualDeep(self.num_actions)
         else:
-            print(f"unidentified option for (which_model={which_model}), should be one of ['dqn_simple', 'dqn_residual']")
+            print(f"unidentified option for (which_model={which_model})")
 
         self.dqn_local.to(self.device)
         self.dqn_target.to(self.device)
@@ -150,6 +143,7 @@ class DRLAgentDQN(object):
             # choose a random action from the set of action space
             sample_action = randint(0, self.num_actions - 1)
         else:
+            # choose a greedy action with max q value
             state = np.expand_dims(state, 0)
             state_tensor = torch.FloatTensor(state).to(self.device)
             state_tensor = torch.permute(state_tensor, [0, 3, 1, 2])
@@ -197,7 +191,7 @@ class DRLAgentDQN(object):
         #print(batch_state.shape, batch_action.shape, batch_reward.shape, batch_next_state.shape, batch_terminal.shape)
         #print(batch_terminal)
 
-        # permute state and next_state tensors
+        # permute state and next_state tensors to have NCHW dimensions
         batch_state = torch.permute(batch_state, [0, 3, 1, 2])
         batch_next_state = torch.permute(batch_next_state, [0, 3, 1, 2])
 
@@ -233,17 +227,6 @@ class DRLAgentDQN(object):
             current_state = np.expand_dims(current_state, 0)
             state_tensor = torch.FloatTensor(current_state).to(self.device)
             #print(state_tensor.shape)
-
-            """
-            state_tensor = state_tensor.reshape(
-                [
-                    1,
-                    self.num_frames_in_state,
-                    self.output_shape[0],
-                    self.output_shape[1],
-                ]
-            )
-            """
             state_tensor = torch.permute(state_tensor, [0, 3, 1, 2])
             action = self.get_action(state_tensor)
             #print(f"test action: {action}")
@@ -301,7 +284,6 @@ def train_drl_agent_dqn(ARGS):
             drl_agent_dqn.step += 1
             # (2) for S_t take an action a_t with greedy policy
             action = drl_agent_dqn.get_epsilon_greedy_action(current_state)
-            #print(f"action: {action}")
 
             next_state, reward, terminal = env.step(action)
 
@@ -401,7 +383,7 @@ def main():
     parser.add_argument("--loss_function", default=loss_function,
         type=str, choices=["huber", "mse", "smooth_l1"], help="loss function to be used for training")
     parser.add_argument("--which_model", default=which_model,
-        type=str, choices=["dqn_simple", "dqn_simple_new", "dqn_residual", "dqn_simple_low_dim"], help="which model to train")
+        type=str, choices=["dqn_simple", "dqn_simple_new", "dqn_residual", "dqn_residual_deep", "dqn_simple_low_dim"], help="which model to train")
     parser.add_argument("--which_optimizer", default=which_optimizer,
         type=str, choices=["rms_prop", "adam"], help="optimizer to be used for learning")
     parser.add_argument("--low_dim", default=low_dim,
