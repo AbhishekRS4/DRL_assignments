@@ -3,12 +3,13 @@ import random
 import numpy as np
 
 class CatchEnv():
-    def __init__(self):
+    def __init__(self, low_dim=False):
         self.size = 21
         self.image = np.zeros((self.size, self.size))
         self.state = []
         self.fps = 4
         self.output_shape = (84, 84)
+        self.low_dim = low_dim
 
     def reset_random(self):
         self.image.fill(0)
@@ -51,7 +52,10 @@ class CatchEnv():
         terminal = self.bally == self.size - 1 - 4
         reward = int(self.pos - 2 <= self.ballx <= self.pos + 2) if terminal else 0
 
-        [self.state.append(resize(self.image, (84, 84))) for _ in range(self.fps - len(self.state) + 1)]
+        if not self.low_dim:
+            [self.state.append(resize(self.image, self.output_shape)) for _ in range(self.fps - len(self.state) + 1)]
+        else:
+            [self.state.append(self.image) for _ in range(self.fps - len(self.state) + 1)]
         self.state = self.state[-self.fps:]
 
         return np.transpose(self.state, [1, 2, 0]), reward, terminal
@@ -67,7 +71,7 @@ class CatchEnv():
 
 
 def run_environment():
-    env = CatchEnv()
+    env = CatchEnv(low_dim=True)
     number_of_episodes = 1
 
     for ep in range(1, number_of_episodes + 1):
