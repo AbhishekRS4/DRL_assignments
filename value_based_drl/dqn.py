@@ -3,6 +3,26 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class DQNSimpleLowDim(nn.Module):
+    def __init__(self, num_actions):
+        super().__init__()
+        self.num_actions = num_actions
+        self.list_feats = [32, 64]
+
+        self.conv_feature_extractor = nn.Sequential(
+            nn.Conv2d(4, self.list_feats[0], kernel_size=7, stride=2, padding=0),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(self.list_feats[0], self.list_feats[1], kernel_size=3, stride=1, padding=0),
+            nn.ReLU(inplace=True),
+        )
+        self.linear_layer = nn.Linear(36*self.list_feats[1], self.num_actions)
+
+    def forward(self, state):
+        conv_features = self.conv_feature_extractor(state)
+        q_value = self.linear_layer(conv_features.reshape(conv_features.size(0), -1))
+        return q_value
+
+
 class DQNSimple(nn.Module):
     def __init__(self, num_actions):
         super().__init__()
