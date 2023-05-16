@@ -11,7 +11,7 @@ def plot_success_rates(ARGS):
     plt.plot(np.arange(1, len(arr_success_rates) + 1), arr_success_rates)
     plt.title("test success rates", fontsize=20)
     plt.xlabel("episode", fontsize=20)
-    plt.ylabel("success rate (%)", fontsize=20)
+    plt.ylabel("success score", fontsize=20)
     plt.grid()
     plt.xticks(fontsize=20)
     plt.yticks(fontsize=20)
