@@ -26,6 +26,7 @@ class ExperienceReplayBuffer(object):
     def store_experience(self, dict_experience):
         dict_experience = NestedAttrDict(**dict_experience)
 
+        """
         transition_table = self.TransitionTable(
             state=torch.FloatTensor(dict_experience.state),
             action=torch.LongTensor([[dict_experience.action]]),
@@ -33,6 +34,16 @@ class ExperienceReplayBuffer(object):
             next_state=torch.FloatTensor(dict_experience.next_state),
             terminal=dict_experience.terminal,
         )
+        """
+
+        transition_table = self.TransitionTable(
+            state=np.array([dict_experience.state], dtype=np.float32),
+            action=np.array([[dict_experience.action]], dtype=np.int32),
+            reward=np.array([dict_experience.reward], dtype=np.float32),
+            next_state=np.array([dict_experience.next_state], dtype=np.float32),
+            terminal=dict_experience.terminal,
+        )
+
         self.replay_buffer.append(transition_table)
         return
 
@@ -172,11 +183,13 @@ class DRLAgentDQN(object):
         # sample experiences from the experience replay buffer
         state_transitions = self.exp_replay_buffer.sample_experiences(self.batch_size)
 
-        batch_state = torch.cat(state_transitions.state).to(self.device)
-        batch_action = torch.cat(state_transitions.action).to(self.device)
-        batch_reward = torch.cat(state_transitions.reward).to(self.device)
-        batch_next_state = torch.cat(state_transitions.next_state).to(self.device)
+        batch_state = torch.FloatTensor(np.concatenate(state_transitions.state)).to(self.device)
+        batch_action = torch.LongTensor(np.concatenate(state_transitions.action)).to(self.device)
+        batch_reward = torch.FloatTensor(np.concatenate(state_transitions.reward)).to(self.device)
+        batch_next_state = torch.FloatTensor(np.concatenate(state_transitions.next_state)).to(self.device)
         batch_terminal = state_transitions.terminal
+
+        #print(batch_state.shape, batch_action.shape, batch_reward.shape, batch_next_state.shape)
 
         # reshape state and next_state tensors
         batch_state = batch_state.view(
