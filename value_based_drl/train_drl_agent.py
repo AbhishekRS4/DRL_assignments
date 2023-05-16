@@ -70,6 +70,7 @@ class DRLAgentDQN(object):
                  loss_function="huber",
                  which_model="dqn_simple",
                  which_optimizer="rms_prop",
+                 low_dim=False,
         ):
         self.step = 0
         self.env = env
@@ -78,10 +79,14 @@ class DRLAgentDQN(object):
         self.criterion = None
         self.optimizer = None
         self.dqn_target = None
+        self.output_shape = None
         self.is_apply_clip = True
         self.batch_size = batch_size
         self.num_frames_in_state = 4
-        self.output_shape = (84, 84)
+        if not low_dim:
+            self.output_shape = (84, 84)
+        else:
+            self.output_shape = (21, 21)
         self.loss_function = loss_function
         self.learning_rate = learning_rate
         self.num_actions = self.env.get_num_actions()
@@ -96,6 +101,9 @@ class DRLAgentDQN(object):
         if which_model.lower() == "dqn_simple":
             self.dqn_local = DQNSimple(self.num_actions)
             self.dqn_target = DQNSimple(self.num_actions)
+        elif which_model.lower() == "dqn_simple_low_dim":
+            self.dqn_local = DQNSimpleLowDim(self.num_actions)
+            self.dqn_target = DQNSimpleLowDim(self.num_actions)
         elif which_model.lower() == "dqn_simple_new":
             self.dqn_local = DQNSimpleNew(self.num_actions)
             self.dqn_target = DQNSimpleNew(self.num_actions)
@@ -127,29 +135,26 @@ class DRLAgentDQN(object):
             print(f"unidentified option for (loss_function={loss_function}), should be one of ['mse', 'smooth_l1', 'huber']")
 
     def get_action(self, state):
+        self.dqn_local.eval()
+        q_values = None
+        # choose the action for which the predicted q_value is the max
+        with torch.no_grad():
+            q_values = self.dqn_local(state).data.cpu().numpy()
+        action_with_max_q = np.argmax(q_values, 1)[0]
+        return action_with_max_q
+
+    def get_greedy_action(self, state):
         sample_action = None
 
         if random() <= self.epsilon:
             # choose a random action from the set of action space
             sample_action = randint(0, self.num_actions - 1)
         else:
-            self.dqn_local.eval()
             state = np.expand_dims(state, 0)
-            state_tensor = torch.FloatTensor(state)
-            state_tensor = state_tensor.reshape(
-                [
-                    -1,
-                    self.num_frames_in_state,
-                    self.output_shape[0],
-                    self.output_shape[1],
-                ]
-            ).to(self.device)
+            state_tensor = torch.FloatTensor(state).to(self.device)
+            state_tensor = torch.permute(state_tensor, [0, 3, 1, 2])
+            sample_action = self.get_action(state_tensor)
 
-            q_values = None
-            # choose the action for which the predicted q_value is the max
-            with torch.no_grad():
-                q_values = self.dqn_local(state_tensor).data.cpu().numpy()
-            sample_action = np.argmax(q_values, 1)[0]
         return sample_action
 
     def update_target_model(self,):
@@ -187,30 +192,24 @@ class DRLAgentDQN(object):
         batch_action = torch.LongTensor(np.concatenate(state_transitions.action)).to(self.device)
         batch_reward = torch.FloatTensor(np.concatenate(state_transitions.reward)).to(self.device)
         batch_next_state = torch.FloatTensor(np.concatenate(state_transitions.next_state)).to(self.device)
-        batch_terminal = state_transitions.terminal
+        batch_terminal = np.array(state_transitions.terminal)
 
-        #print(batch_state.shape, batch_action.shape, batch_reward.shape, batch_next_state.shape)
+        #print(batch_state.shape, batch_action.shape, batch_reward.shape, batch_next_state.shape, batch_terminal.shape)
+        #print(batch_terminal)
 
-        # reshape state and next_state tensors
-        batch_state = batch_state.view(
-            [
-                self.batch_size,
-                self.num_frames_in_state,
-                self.output_shape[0],
-                self.output_shape[1],
-            ]
-        )
-        batch_next_state = batch_next_state.view(
-            [
-                self.batch_size,
-                self.num_frames_in_state,
-                self.output_shape[0],
-                self.output_shape[1],
-            ]
-        )
+        # permute state and next_state tensors
+        batch_state = torch.permute(batch_state, [0, 3, 1, 2])
+        batch_next_state = torch.permute(batch_next_state, [0, 3, 1, 2])
 
         # apply reward clipping between -1 and 1
-        batch_reward.data.clamp_(-1, 1)
+        #batch_reward.data.clamp_(-1, 1)
+
+        # predict q_value for next_state with the DQN target model
+        q_next = None
+        with torch.no_grad():
+            q_next = self.dqn_target(batch_next_state).detach()
+        q_pred_next = torch.max(q_next, 1)[0]
+        q_pred_next[batch_terminal] = 0.0
 
         # apply zero grad for the optimizer
         self.optimizer.zero_grad()
@@ -223,13 +222,10 @@ class DRLAgentDQN(object):
         #print(batch_action)
         #print(q_values)
 
-        # predict q_value for next_state with the DQN target model
-        q_next = self.dqn_target(batch_next_state).detach()
-        q_pred_next = torch.max(q_next, 1)[0]
-        q_pred_next[batch_terminal] = 0.0
         #print(batch_reward.shape, target_pred.shape)
         #print(target_values.shape, non_final_mask.shape, q_values.shape)
         q_target = batch_reward + (self.gamma * q_pred_next)
+        #print(q_target)
 
         #print(target_values)
         loss = self._compute_loss(q_pred_current, q_target)
@@ -245,9 +241,11 @@ class DRLAgentDQN(object):
         current_state = self.env.reset()
 
         while not terminal:
-            state = np.expand_dims(current_state, 0)
-            state_tensor = torch.FloatTensor(state).to(self.device)
+            current_state = np.expand_dims(current_state, 0)
+            state_tensor = torch.FloatTensor(current_state).to(self.device)
             #print(state_tensor.shape)
+
+            """
             state_tensor = state_tensor.reshape(
                 [
                     1,
@@ -256,19 +254,19 @@ class DRLAgentDQN(object):
                     self.output_shape[1],
                 ]
             )
-
-            q_pred = None
-            with torch.no_grad():
-                q_pred = self.dqn_local(state_tensor)
-            action = np.argmax(q_pred.data.cpu().numpy(), 1)
-            next_state, test_reward, terminal = self.env.step(action[0])
+            """
+            state_tensor = torch.permute(state_tensor, [0, 3, 1, 2])
+            action = self.get_action(state_tensor)
+            #print(f"test action: {action}")
+            next_state, test_reward, terminal = self.env.step(action)
             current_state = next_state
 
         return test_reward
 
 
 def train_drl_agent_dqn(ARGS):
-    env = CatchEnv()
+    env = CatchEnv(low_dim=bool(ARGS.low_dim))
+    print(f"low dimensional images: {bool(ARGS.low_dim)}, model: {ARGS.which_model}")
 
     num_actions = env.get_num_actions()
     num_episodes = ARGS.num_episodes
@@ -284,6 +282,7 @@ def train_drl_agent_dqn(ARGS):
         loss_function=ARGS.loss_function,
         which_model=ARGS.which_model,
         which_optimizer=ARGS.which_optimizer,
+        low_dim=ARGS.low_dim,
     )
 
     if not os.path.isdir(dir_model):
@@ -310,7 +309,7 @@ def train_drl_agent_dqn(ARGS):
         while not terminal:
             drl_agent_dqn.step += 1
             # (2) for S_t take an action a_t with greedy policy
-            action = drl_agent_dqn.get_action(current_state)
+            action = drl_agent_dqn.get_greedy_action(current_state)
             #print(f"action: {action}")
 
             next_state, reward, terminal = env.step(action)
@@ -340,7 +339,7 @@ def train_drl_agent_dqn(ARGS):
         #         Test        #
         #---------------------#
         test_reward = drl_agent_dqn.test()
-        if test_reward >= 1:
+        if test_reward == 1:
             count_test_wins += 1
         print(f"episode: {episode}, test, reward obtained by the agent: {test_reward}")
 
@@ -373,14 +372,15 @@ def main():
     gamma = 0.99
     batch_size = 16
     num_episodes = 3000
-    learning_rate = 1e-4
+    learning_rate = 1e-3
     exp_buffer_size = 50000
-    target_update_interval = 1000
+    target_update_interval = 100
     test_interval = 10
     model_save_interval = 1000
 
     loss_function = "mse"
-    which_model = "dqn_simple_new"
+    which_model = "dqn_simple_low_dim"
+    low_dim = 1
     which_optimizer = "rms_prop"
     dir_model = "rl_models"
 
@@ -410,9 +410,11 @@ def main():
     parser.add_argument("--loss_function", default=loss_function,
         type=str, choices=["huber", "mse", "smooth_l1"], help="loss function to be used for training")
     parser.add_argument("--which_model", default=which_model,
-        type=str, choices=["dqn_simple", "dqn_simple_new", "dqn_residual"], help="which model to train")
+        type=str, choices=["dqn_simple", "dqn_simple_new", "dqn_residual", "dqn_simple_low_dim"], help="which model to train")
     parser.add_argument("--which_optimizer", default=which_optimizer,
         type=str, choices=["rms_prop", "adam"], help="optimizer to be used for learning")
+    parser.add_argument("--low_dim", default=low_dim,
+        type=str, choices=[1, 0], help="boolean indicating to use low dimensional images or not")
 
     ARGS, unparsed = parser.parse_known_args()
     train_drl_agent_dqn(ARGS)
