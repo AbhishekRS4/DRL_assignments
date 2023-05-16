@@ -143,7 +143,7 @@ class DRLAgentDQN(object):
         action_with_max_q = np.argmax(q_values, 1)[0]
         return action_with_max_q
 
-    def get_greedy_action(self, state):
+    def get_epsilon_greedy_action(self, state):
         sample_action = None
 
         if random() <= self.epsilon:
@@ -201,33 +201,22 @@ class DRLAgentDQN(object):
         batch_state = torch.permute(batch_state, [0, 3, 1, 2])
         batch_next_state = torch.permute(batch_next_state, [0, 3, 1, 2])
 
-        # apply reward clipping between -1 and 1
-        #batch_reward.data.clamp_(-1, 1)
-
         # predict q_value for next_state with the DQN target model
         q_next = None
         with torch.no_grad():
             q_next = self.dqn_target(batch_next_state).detach()
         q_pred_next = torch.max(q_next, 1)[0]
         q_pred_next[batch_terminal] = 0.0
-
-        # apply zero grad for the optimizer
-        self.optimizer.zero_grad()
+        q_target = batch_reward + (self.gamma * q_pred_next)
 
         # predict q_value for state with the DQN eval model
         q_current = self.dqn_local(batch_state)
-        #print(q_pred.shape, batch_action.shape)
-        q_pred_current = q_current.gather(1, batch_action)
-        #print(q_pred)
-        #print(batch_action)
-        #print(q_values)
+        q_pred_current = q_current.gather(1, batch_action).squeeze()
+        #print(batch_reward.shape, q_pred_next.shape, q_target.shape, q_pred_current.shape)
 
-        #print(batch_reward.shape, target_pred.shape)
-        #print(target_values.shape, non_final_mask.shape, q_values.shape)
-        q_target = batch_reward + (self.gamma * q_pred_next)
-        #print(q_target)
-
-        #print(target_values)
+        # apply zero grad for the optimizer
+        # compute loss and backprop
+        self.optimizer.zero_grad()
         loss = self._compute_loss(q_pred_current, q_target)
         loss.backward()
         self.optimizer.step()
@@ -309,7 +298,7 @@ def train_drl_agent_dqn(ARGS):
         while not terminal:
             drl_agent_dqn.step += 1
             # (2) for S_t take an action a_t with greedy policy
-            action = drl_agent_dqn.get_greedy_action(current_state)
+            action = drl_agent_dqn.get_epsilon_greedy_action(current_state)
             #print(f"action: {action}")
 
             next_state, reward, terminal = env.step(action)
@@ -371,16 +360,16 @@ def train_drl_agent_dqn(ARGS):
 def main():
     gamma = 0.99
     batch_size = 16
-    num_episodes = 3000
+    num_episodes = 2000
     learning_rate = 1e-3
     exp_buffer_size = 50000
     target_update_interval = 100
     test_interval = 10
-    model_save_interval = 1000
+    model_save_interval = 500
 
     loss_function = "mse"
-    which_model = "dqn_simple_low_dim"
-    low_dim = 1
+    which_model = "dqn_residual"
+    low_dim = 0
     which_optimizer = "rms_prop"
     dir_model = "rl_models"
 
