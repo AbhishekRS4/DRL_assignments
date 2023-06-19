@@ -1,7 +1,6 @@
 import gym
 import torch
 import argparse
-import gymnasium
 import torch.nn as nn
 
 from stable_baselines3 import PPO
@@ -12,12 +11,20 @@ def train_default_ppo(policy, total_timesteps, file_weights, learning_rate, gamm
     # Parallel environments
     vec_env = make_vec_env(env_name, n_envs=num_envs)
 
-    model = PPO(policy, vec_env, learning_rate=learning_rate, verbose=1, device="auto", gamma=gamma)
+    model = PPO(
+        policy, vec_env,
+        tensorboard_log=f"{file_weights}_{total_timesteps}_logs",
+        learning_rate=learning_rate,
+        n_steps=1024,
+        verbose=1,
+        device="auto",
+        gamma=gamma
+    )
     model.learn(total_timesteps=total_timesteps)
-    model.save(file_weights)
+    model.save(f"{file_weights}_{total_timesteps}")
 
+    """
     del model # remove to demonstrate saving and loading
-
     model = PPO.load(file_weights)
 
     obs = vec_env.reset()
@@ -25,7 +32,7 @@ def train_default_ppo(policy, total_timesteps, file_weights, learning_rate, gamm
         action, _states = model.predict(obs)
         obs, rewards, dones, info = vec_env.step(action)
         vec_env.render("human")
-
+    """
     return
 
 
@@ -54,8 +61,8 @@ def main():
     env_name = "Tutankham-v4"
 
     num_envs = 4
-    total_timesteps = 25000
-    learning_rate = 3e-4
+    total_timesteps = 300000
+    learning_rate = 1e-4
     gamma = 0.99
 
     parser = argparse.ArgumentParser(
