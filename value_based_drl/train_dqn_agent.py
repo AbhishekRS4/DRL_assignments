@@ -5,8 +5,10 @@ import torch
 import argparse
 import numpy as np
 import torch.nn as nn
+import matplotlib.pyplot as plt
 
 from copy import deepcopy
+from imageio import imwrite
 from torch.autograd import Variable
 from torch.optim import RMSprop, Adam
 from collections import deque, namedtuple
@@ -16,7 +18,6 @@ from pyats.datastructures import NestedAttrDict
 from dqn import *
 from catch import CatchEnv
 from logger_utils import CSVWriter, write_dict_to_json
-
 
 class ExperienceReplayBuffer(object):
     def __init__(self, exp_buffer_size):
@@ -165,6 +166,12 @@ class DRLAgentDQN(object):
         torch.save(dict_checkpoint, file_checkpoint)
         return
 
+    def load_model(self, file_checkpoint):
+        dict_checkpoint = torch.load(file_checkpoint)
+        self.dqn_local.load_state_dict(dict_checkpoint["dqn_local"])
+        self.dqn_target.load_state_dict(dict_checkpoint["dqn_target"])
+        return
+
     def _update_epsilon(self):
         if self.epsilon > self.epsilon_end:
             self.epsilon -= ((self.epsilon_start - self.epsilon_end) / self.epsilon_decay)
@@ -235,6 +242,27 @@ class DRLAgentDQN(object):
 
         return test_reward
 
+    def play_game(self, game_count, dir_save_states, save_states=True):
+        test_reward = 0
+        terminal = False
+        self.dqn_local.eval()
+        current_state = self.env.reset()
+
+        step_count = 1
+
+        while not terminal:
+            file_state = os.path.join(dir_save_states, f"state_{game_count}_{step_count}.png")
+            imwrite(file_state, current_state.astype(np.uint8))
+            current_state = np.expand_dims(current_state, 0)
+            state_tensor = torch.FloatTensor(current_state).to(self.device)
+            #print(state_tensor.shape)
+            state_tensor = torch.permute(state_tensor, [0, 3, 1, 2])
+            action = self.get_action(state_tensor)
+            #print(f"test action: {action}")
+            next_state, test_reward, terminal = self.env.step(action)
+            current_state = next_state
+            step_count += 1
+        return test_reward
 
 def train_drl_agent_dqn(ARGS):
     env = CatchEnv(low_dim=bool(ARGS.low_dim))
